@@ -24,6 +24,13 @@ class CloudConfig:
     daily_limit_points: int = 5000
     root_key: str = ""
     cors_allow_origins: list[str] = field(default_factory=lambda: ["*"])
+    # GitHub OAuth
+    github_oauth_enabled: bool = False
+    github_oauth_client_id: str = ""
+    github_oauth_client_secret: str = ""
+    github_oauth_callback_url: str = ""
+    github_oauth_scopes: list[str] = field(default_factory=lambda: ["read:user"])
+    github_api_base: str = "https://api.github.com"
 
     @property
     def database_file(self) -> Path:

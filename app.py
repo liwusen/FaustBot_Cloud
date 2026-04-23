@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from .config import CloudConfig, load_config
@@ -41,11 +42,14 @@ def create_app(config: CloudConfig | None = None, storage: CloudStorage | None =
     runtime_storage = storage or CloudStorage(runtime_config.database_file)
     runtime_storage.initialize()
     service = CloudInferenceService(runtime_config, runtime_storage)
+    # ephemeral state store for OAuth CSRF protection
+    app_state_oauth = {}
 
     app = FastAPI(title="FaustBot Cloud Inference Server")
     app.state.cloud_config = runtime_config
     app.state.cloud_storage = runtime_storage
     app.state.cloud_service = service
+    app.state.oauth_state = app_state_oauth
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(runtime_config.cors_allow_origins or ["*"]),
@@ -169,19 +173,51 @@ def create_app(config: CloudConfig | None = None, storage: CloudStorage | None =
             file.content_type or "audio/wav",
         )
 
-    @app.get("/v1/keys")
-    async def list_keys():
-        rows = app.state.cloud_storage.list_service_keys()
-        return [
-            {
-                "service_key": r.service_key,
-                "name": r.name,
-                "note": r.note,
-                "enabled": r.enabled,
-                "created_at": r.created_at,
-            }
-            for r in rows
-        ]
+
+    @app.get("/oauth-login")
+    async def oauth_login(request: Request):
+        cfg: CloudConfig = app.state.cloud_config
+        if not getattr(cfg, "github_oauth_enabled", False):
+            raise CloudServiceError("GitHub OAuth 未启用", status_code=404, code="oauth_not_enabled")
+        from . import github_oauth
+
+        state = github_oauth.generate_state()
+        url_state = github_oauth.build_authorize_url(cfg.github_oauth_client_id, cfg.github_oauth_callback_url, cfg.github_oauth_scopes, state)
+        # build_authorize_url returns (url, state)
+        if isinstance(url_state, tuple):
+            authorize_url, _ = url_state
+        else:
+            authorize_url = url_state
+        # store ephemeral state
+        app.state.oauth_state[state] = True
+        return RedirectResponse(authorize_url)
+
+    @app.get("/oauth/callback")
+    async def oauth_callback(code: str | None = Query(default=None), state: str | None = Query(default=None)):
+        cfg: CloudConfig = app.state.cloud_config
+        if not getattr(cfg, "github_oauth_enabled", False):
+            raise CloudServiceError("GitHub OAuth 未启用", status_code=404, code="oauth_not_enabled")
+        if not code or not state:
+            raise CloudServiceError("缺少 code 或 state", status_code=400, code="invalid_oauth_callback")
+        # validate state
+        if not app.state.oauth_state.pop(state, None):
+            raise CloudServiceError("无效或过期的 state", status_code=400, code="invalid_state")
+        from . import github_oauth
+
+        # exchange code
+        try:
+            access_token = github_oauth.exchange_code_for_token(code, cfg.github_oauth_client_id, cfg.github_oauth_client_secret, cfg.github_oauth_callback_url, cfg.github_api_base)
+            gh_user = github_oauth.get_github_user(access_token, cfg.github_api_base)
+        except Exception as exc:
+            raise CloudServiceError("GitHub 授权失败", status_code=400, code="oauth_exchange_failed")
+
+        github_id = str(gh_user.get("id"))
+        github_login = str(gh_user.get("login") or "")
+        github_email = str(gh_user.get("email") or "")
+
+        record = app.state.cloud_storage.create_or_get_service_key_for_github(github_id, github_login, github_email)
+        # return a simple JSON with the internal key
+        return {"service_key": record.service_key, "name": record.name, "note": record.note, "created_at": record.created_at}
 
     def _require_root_key(authorization: str | None, x_root_key: str | None) -> None:
         root_key = _extract_root_key(authorization, x_root_key)

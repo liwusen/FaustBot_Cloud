@@ -47,7 +47,10 @@ class CloudStorage:
                     name TEXT NOT NULL DEFAULT '',
                     note TEXT NOT NULL DEFAULT '',
                     enabled INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    github_id TEXT NOT NULL DEFAULT '',
+                    github_login TEXT NOT NULL DEFAULT '',
+                    github_email TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS usage_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,11 +75,27 @@ class CloudStorage:
                 );
                 """
             )
+            # Ensure github columns exist for compatibility with older DBs
+            self._ensure_service_key_columns(conn)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.database_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _ensure_service_key_columns(self, conn: sqlite3.Connection) -> None:
+        # Ensure compatibility with older DBs by adding github columns if missing
+        rows = conn.execute("PRAGMA table_info(service_keys)").fetchall()
+        existing = {r[1] for r in rows}
+        to_add = []
+        if "github_id" not in existing:
+            to_add.append("ALTER TABLE service_keys ADD COLUMN github_id TEXT NOT NULL DEFAULT ''")
+        if "github_login" not in existing:
+            to_add.append("ALTER TABLE service_keys ADD COLUMN github_login TEXT NOT NULL DEFAULT ''")
+        if "github_email" not in existing:
+            to_add.append("ALTER TABLE service_keys ADD COLUMN github_email TEXT NOT NULL DEFAULT ''")
+        for stmt in to_add:
+            conn.execute(stmt)
 
     def create_service_key(self, name: str = "", note: str = "") -> ServiceKeyRecord:
         while True:
@@ -91,6 +110,45 @@ class CloudStorage:
                 return ServiceKeyRecord(candidate, str(name or ""), str(note or ""), True, created_at)
             except sqlite3.IntegrityError:
                 continue
+
+    def get_service_key_by_github_id(self, github_id: str) -> ServiceKeyRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT service_key, name, note, enabled, created_at FROM service_keys WHERE github_id = ?",
+                (str(github_id or ""),),
+            ).fetchone()
+        return self._service_key_from_row(row) if row else None
+
+    def link_service_key_to_github(self, service_key: str, github_id: str, github_login: str = "", github_email: str = "") -> bool:
+        with self._connect() as conn:
+            result = conn.execute(
+                "UPDATE service_keys SET github_id = ?, github_login = ?, github_email = ? WHERE service_key = ?",
+                (str(github_id or ""), str(github_login or ""), str(github_email or ""), str(service_key or "")),
+            )
+        return result.rowcount > 0
+
+    def create_or_get_service_key_for_github(self, github_id: str, github_login: str = "", github_email: str = "") -> ServiceKeyRecord:
+        # Return existing service key bound to this github_id or create a new permanent key and bind it.
+        existing = self.get_service_key_by_github_id(github_id)
+        if existing:
+            return existing
+        # create new key and associate
+        record = self.create_service_key(name=f"github:{github_login}", note=f"github:{github_id}")
+        # link github info
+        linked = False
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE service_keys SET github_id = ?, github_login = ?, github_email = ? WHERE service_key = ?",
+                    (str(github_id or ""), str(github_login or ""), str(github_email or ""), str(record.service_key)),
+                )
+            linked = True
+        except Exception:
+            linked = False
+        if not linked:
+            # best-effort: return the created key even if linking failed
+            return record
+        return self.get_service_key(record.service_key)
 
     def list_service_keys(self) -> list[ServiceKeyRecord]:
         with self._connect() as conn:

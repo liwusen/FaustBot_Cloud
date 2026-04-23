@@ -53,6 +53,16 @@ def main(argv: list[str] | None = None) -> int:
     set_parser.add_argument("key")
     set_parser.add_argument("value")
 
+    oauth_set = subparsers.add_parser("set-github-oauth", help="设置 GitHub OAuth 配置")
+    oauth_set.add_argument("--client-id", default="")
+    oauth_set.add_argument("--client-secret", default="")
+    oauth_set.add_argument("--callback", default="")
+    oauth_set.add_argument("--enable", action="store_true")
+
+    subparsers.add_parser("show-oauth-config", help="显示 GitHub OAuth 配置摘要")
+
+    oauth_url = subparsers.add_parser("oauth-authorize-url", help="生成并打印 GitHub 授权 URL（仅显示）")
+
     create_key = subparsers.add_parser("create-key", help="创建 Service Key")
     create_key.add_argument("--name", default="")
     create_key.add_argument("--note", default="")
@@ -99,6 +109,49 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "set-root-key":
         config = update_config({"root_key": str(args.value or "").strip()}, config_path)
         print(json.dumps(asdict(config), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "set-github-oauth":
+        updates: dict[str, Any] = {}
+        if args.client_id:
+            updates["github_oauth_client_id"] = str(args.client_id)
+        if args.client_secret:
+            updates["github_oauth_client_secret"] = str(args.client_secret)
+        if args.callback:
+            updates["github_oauth_callback_url"] = str(args.callback)
+        if args.enable:
+            updates["github_oauth_enabled"] = True
+        if updates:
+            cfg = update_config(updates, config_path)
+            print(json.dumps(asdict(cfg), ensure_ascii=False, indent=2))
+        else:
+            print("未提供更新项")
+        return 0
+
+    if args.command == "show-oauth-config":
+        cfg = load_config(config_path)
+        subset = {
+            "github_oauth_enabled": cfg.github_oauth_enabled,
+            "github_oauth_client_id": cfg.github_oauth_client_id,
+            "github_oauth_callback_url": cfg.github_oauth_callback_url,
+            "github_oauth_scopes": cfg.github_oauth_scopes,
+        }
+        print(json.dumps(subset, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "oauth-authorize-url":
+        cfg = load_config(config_path)
+        try:
+            from . import github_oauth
+
+            url_state = github_oauth.build_authorize_url(cfg.github_oauth_client_id, cfg.github_oauth_callback_url, cfg.github_oauth_scopes)
+            if isinstance(url_state, tuple):
+                authorize_url, state = url_state
+            else:
+                authorize_url = url_state
+            print(json.dumps({"authorize_url": authorize_url, "state": state}, ensure_ascii=False, indent=2))
+        except Exception as exc:
+            print("无法生成授权 URL:", exc)
         return 0
 
     _, storage = _build_storage(config_path)
