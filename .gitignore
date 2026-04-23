@@ -1,0 +1,7 @@
+cloud.config.json
+
+data/
+
+__pycache__/
+
+.\tests\__pycache__\
