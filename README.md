@@ -1,4 +1,6 @@
 # FaustBot Cloud Inference Server
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fliwusen%2FFaustBot_Cloud.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fliwusen%2FFaustBot_Cloud?ref=badge_shield)
+
 
 独立的 HTTP 云推理服务，代码、CLI、配置和本地存储都位于 `cloud_inference_server` 目录下。
 
@@ -126,3 +128,6 @@ curl -X POST "http://127.0.0.1:18980/v1/asr" ^
 - `FAUSTBOT_CLOUD_DEFAULT_REFER_HASH` 填上传参考音频后得到的哈希
 
 客户端 backend 会继续走原有 `/faust/audio/tts` 和 `/faust/audio/asr`，但内部转发到 FaustBot Cloud。
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fliwusen%2FFaustBot_Cloud.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fliwusen%2FFaustBot_Cloud?ref=badge_large)
